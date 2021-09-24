@@ -2,7 +2,7 @@ dbdata/
 __pycache__/
 .idea/
 .idea
-miniDB.iml
-misc.xml
-workspace.xml
+.idea/miniDB.iml
+.idea/misc.xml
+.idea/workspace.xml
 .pytest_cache
