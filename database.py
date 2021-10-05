@@ -6,26 +6,47 @@ import os
 from btree import Btree
 import shutil
 from misc import split_condition
+from aenum import Enum
+from Permission import Permission
+
+#MarPap start
+import uuid
+import inspect
+#MarPap end
 
 class Database:
     '''
     Database class contains tables.
     '''
 
-    def __init__(self, name, load=True):
+    def __init__(self, name, userName, userPassword, load=True):
         self.tables = {}
         self._name = name
 
+
+
         self.savedir = f'dbdata/{name}_db'
 
-        if load:
+        #MarPap start
+        self._userName = userName
+        self._userIsOwner = False
+        
+        already_exists = os.path.exists(self.savedir)
+
+        if (load and already_exists):
             try:
                 self.load(self.savedir)
                 print(f'Loaded "{name}".')
-                return
-            except:
-                print(f'"{name}" db does not exist, creating new.')
 
+                if not self.__Sec_HasAccessToDB(userName, userPassword):
+                    raise Exception("You don't have permission to access db")
+                return
+
+            except:
+                raise Exception("You don't have permission to access db")
+        #MarPap end
+        
+        
         # create dbdata directory if it doesnt exist
         if not os.path.exists('dbdata'):
             os.mkdir('dbdata')
@@ -41,8 +62,26 @@ class Database:
         self.create_table('meta_locks',  ['table_name', 'locked'], [str, bool])
         self.create_table('meta_insert_stack',  ['table_name', 'indexes'], [str, list])
         self.create_table('meta_indexes',  ['table_name', 'index_name'], [str, str])
+        #MarPap start
+        self.create_table('meta_users', ['user_name', 'password', 'is_owner', 'GUID'], [str, str, bool, str])
+        self.create_table('meta_userGroups', ['userGroup_name', 'GUID'], [str, str])
+        self.create_table('meta_userGroups_Users', ['userGroup_name','user_name', 'groupGUID', 'combined'], [str, str, str, str])
+        self.create_table('meta_persmissions', ['GUID','table_name','GUID_Table_Name', 'canRead', 'canInsert', 'canUpdate', 'canDelete' ], [str, str, str, Permission, Permission, Permission, Permission])
         self.save()
 
+        result, userGUID = self.__Sec_UserAddwOwner(userName, userPassword, True)
+        
+        self.__Sec_UserGrantAccessInternal(userGUID,"meta_length", Permission.AccessGranted, Permission.AccessGranted, Permission.AccessGranted, Permission.AccessGranted)
+        self.__Sec_UserGrantAccessInternal(userGUID,"meta_locks", Permission.AccessGranted, Permission.AccessGranted, Permission.AccessGranted, Permission.AccessGranted)
+        self.__Sec_UserGrantAccessInternal(userGUID,"meta_insert_stack", Permission.AccessGranted, Permission.AccessGranted, Permission.AccessGranted, Permission.AccessGranted)
+        self.__Sec_UserGrantAccessInternal(userGUID,"meta_indexes", Permission.AccessGranted, Permission.AccessGranted, Permission.AccessGranted, Permission.AccessGranted)
+        self.__Sec_UserGrantAccessInternal(userGUID,"meta_users", Permission.AccessGranted, Permission.AccessGranted, Permission.AccessGranted, Permission.AccessGranted)
+        self.__Sec_UserGrantAccessInternal(userGUID,"meta_userGroups", Permission.AccessGranted, Permission.AccessGranted, Permission.AccessGranted, Permission.AccessGranted)
+        self.__Sec_UserGrantAccessInternal(userGUID,"meta_userGroups_Users", Permission.AccessGranted, Permission.AccessGranted, Permission.AccessGranted, Permission.AccessGranted)
+        self.__Sec_UserGrantAccessInternal(userGUID,"meta_persmissions", Permission.AccessGranted, Permission.AccessGranted, Permission.AccessGranted, Permission.AccessGranted)
+        
+        #MarPap end
+        
 
 
     def save(self):
@@ -213,6 +252,7 @@ class Database:
         self.unlock_table(table_name)
         self._update()
         self.save()
+        
 
     def insert(self, table_name, row, lock_load_save=True):
         '''
@@ -222,6 +262,29 @@ class Database:
         row -> a list of the values that are going to be inserted (will be automatically casted to predifined type)
         lock_load_save -> If false, user need to load, lock and save the states of the database (CAUTION). Usefull for bulk loading
         '''
+        
+        #MarPap start
+        curframe = inspect.currentframe()
+        #print(f"curframe=<{curframe}>")
+        calframe = inspect.getouterframes(curframe, 2)
+        #print(f"calframe=<{calframe}>")
+        #print('--------caller name:', calframe[1][1])
+        #print('--------caller name:', calframe[1][3])
+        
+        if "database.py" in calframe[1][1]:
+          #print("grant access. From inside")  
+          canInsert = Permission.AccessGranted
+        else:
+          #print("check access. From outside")
+          #print(f"calling function {calframe[1][3]}")
+          canRead , canInsert, canUpdate, canDelete = self.__Sec_UserHasAccessToTableInternal(self._userName, table_name)
+        
+        if  not (canInsert == Permission.AccessGranted):
+          raise Exception("You don't have permission to select from table")
+        
+        #MarPap end
+
+        
         if lock_load_save:
             self.load(self.savedir)
             if self.is_locked(table_name):
@@ -256,6 +319,27 @@ class Database:
 
                     operatores supported -> (<,<=,==,>=,>)
         '''
+        #MarPap start
+        curframe = inspect.currentframe()
+        #print(f"curframe=<{curframe}>")
+        calframe = inspect.getouterframes(curframe, 2)
+        #print(f"calframe=<{calframe}>")
+        #print('--------caller name:', calframe[1][1])
+        #print('--------caller name:', calframe[1][3])
+        
+        if "database.py" in calframe[1][1]:
+          #print("grant access. From inside")  
+          canUpdate = Permission.AccessGranted
+        else:
+          #print("check access. From outside")
+          #print(f"calling function {calframe[1][3]}")
+          canRead , canInsert, canUpdate, canDelete = self.__Sec_UserHasAccessToTableInternal(self._userName, table_name)
+        
+        if  not (canUpdate == Permission.AccessGranted):
+          raise Exception("You don't have permission to select from table")
+        
+        #MarPap end
+        
         self.load(self.savedir)
         if self.is_locked(table_name):
             return
@@ -264,6 +348,7 @@ class Database:
         self.unlock_table(table_name)
         self._update()
         self.save()
+        
 
     def delete(self, table_name, condition):
         '''
@@ -276,6 +361,29 @@ class Database:
 
                     operatores supported -> (<,<=,==,>=,>)
         '''
+        
+        #MarPap start
+        curframe = inspect.currentframe()
+        #print(f"curframe=<{curframe}>")
+        calframe = inspect.getouterframes(curframe, 2)
+        #print(f"calframe=<{calframe}>")
+        #print('--------caller name:', calframe[1][1])
+        #print('--------caller name:', calframe[1][3])
+        
+        if "database.py" in calframe[1][1]:
+          #print("grant access. From inside")  
+          canDelete = Permission.AccessGranted
+        else:
+          #print("check access. From outside")
+          #print(f"calling function {calframe[1][3]}")
+          canRead , canInsert, canUpdate, canDelete = self.__Sec_UserHasAccessToTableInternal(self._userName, table_name)
+        
+        if  not (canDelete == Permission.AccessGranted):
+          raise Exception("You don't have permission to select from table")
+        
+        #MarPap end
+
+        
         self.load(self.savedir)
         if self.is_locked(table_name):
             return
@@ -289,6 +397,7 @@ class Database:
             self._add_to_insert_stack(table_name, deleted)
         self.save()
 
+ 
     def select(self, table_name, columns, condition=None, order_by=None, asc=False,\
                top_k=None, save_as=None, return_object=False):
         '''
@@ -308,6 +417,27 @@ class Database:
         return_object -> If true, the result will be a table object (usefull for internal usage). Def: False (the result will be printed)
 
         '''
+        #MarPap start
+        curframe = inspect.currentframe()
+        #print(f"curframe=<{curframe}>")
+        calframe = inspect.getouterframes(curframe, 2)
+        #print(f"calframe=<{calframe}>")
+        #print('--------caller name:', calframe[1][1])
+        #print('--------caller name:', calframe[1][3])
+        
+        if "database.py" in calframe[1][1]:
+          #print("grant access. From inside")  
+          canRead = Permission.AccessGranted
+        else:
+          #print("check access. From outside")
+          #print(f"calling function {calframe[1][3]}")
+          canRead , canInsert, canUpdate, canDelete = self.__Sec_UserHasAccessToTableInternal(self._userName, table_name)
+        
+        if  not (canRead == Permission.AccessGranted):
+          raise Exception("You don't have permission to select from table")
+        
+        #MarPap end
+        
         self.load(self.savedir)
         if self.is_locked(table_name):
             return
@@ -581,3 +711,564 @@ class Database:
         index = pickle.load(f)
         f.close()
         return index
+
+
+    ####################################################################################################
+    #MarPap start
+
+    def Sec_IsOwner(self):
+        try:
+           isOwner = False
+           resUserName = ""
+           resIsOwner = False
+           #self.select('meta_users', ['user_name','is_owner'], f'user_name=={self._userName}', return_object=False)
+           user_exists = self.select('meta_users', ['user_name','is_owner'], f'user_name=={self._userName}', return_object=True)
+           for key, value in user_exists.__dict__.items():
+               #print(key, '] : [', value)
+               if (key.strip() == "data"):
+                  resUserName = value[0][0]
+                  resIsOwner = value[0][1]
+                  #print("found")
+           #print(result[0][0])
+           if (resUserName == self._userName):
+               isOwner = resIsOwner
+        except Exception as e:
+            #print(str(e))
+            isOwner = False
+        return isOwner
+
+
+    def Sec_UserAdd(self, _userName, _userPassword):
+       #result: 1: success,
+       #        0: Current user is NOT the owner
+       #       -1: user exists
+
+       # check if current user is the OWNER
+       if not self.Sec_IsOwner():
+           return 0
+
+       # check if new user already exists
+       if self.__Sec_HasAccessToDB(_userName, _userPassword):
+           return -1
+
+       # Insert new user 
+       result, userGuid = self.__Sec_UserAddwOwner(_userName, _userPassword, False)
+       return result
+
+    
+    def __Sec_UserAddwOwner(self, _userName, _userPassword, isOwner):
+       userGuid = str(uuid.uuid4())
+       self.tables['meta_users']._insert([_userName, _userPassword, isOwner, userGuid]) #uuid.SafeUUid.bytes
+       self.save()
+       return 1, userGuid
+
+
+    def Sec_UserDelete(self, userName):
+        #result: 1: success,
+        #        0: current user IS Not the owner
+        #       -1: the owner can not delete himself
+        #       -2: user does not exist
+
+        #check if current user is the OWNER
+        if not self.Sec_IsOwner():
+           return 0
+
+        # check if OWNER try to delete himself
+        if (self._userName == userName):
+           return -1
+
+        #check if user to delete Does NOT exist in db
+        if not self.__Sec_HasAccessToDB(userName, ""):
+           return -2
+
+        #remove user from groups
+        
+        self.tables['meta_userGroups_Users']._delete_where(f"user_name=={userName}") 
+        self.save()
+        
+        #get user's GUID
+        user_GUID = self.__Sec_getGUID('meta_users', 'user_name', userName)
+        #remove user's permissions
+        self.tables['meta_persmissions']._delete_where(f"GUID=={user_GUID}")      
+        self.save()
+        
+        #remove user from users
+        self.tables['meta_users']._delete_where(f"user_name=={userName}") 
+        self.save()
+        return 1
+
+    def Sec_GroupExists(self, groupName):
+        result = False
+        try:
+           #print("debug 1")
+           resGUID = "" 
+           resGroupName = ""
+           res = self.select('meta_userGroups', ['userGroup_name', 'GUID'], f'userGroup_name=={groupName}', return_object=True)
+           #print("debug 2")
+           data = res.__dict__.get('data')
+           #print("debug 3")
+           if len(data) > 0:
+             #print("debug 4")
+             resGroupName = res.__dict__.get('data')[0][0]
+             #print("debug 5")
+             #print(f"resGroupName = [{resGroupName}]")
+             if (resGroupName.strip() == groupName):
+                #print("debug 6")
+                result = True
+                resGUID = res.__dict__.get('data')[0][1]
+
+        except Exception as e:
+            print(str(e))
+            result = False
+        return result, resGUID
+
+
+    def Sec_GroupAdd(self, groupName):
+       #result: 1: success
+       #        0: current user IS Not the owner
+       #       -1: group exists
+
+       # check if current user is the OWNER
+       if not self.Sec_IsOwner():
+          return 0
+       
+       #Check if Group exists
+       groupExists, groupGUID = self.Sec_GroupExists(groupName)
+       if groupExists:
+          return -1
+        
+       self.tables['meta_userGroups']._insert([groupName, str(uuid.uuid4())]) #uuid.SafeUUid.bytes
+       self.save()
+       return 1
+    
+    def Sec_GroupDelete(self, groupName):
+        #result: 1: success,
+        #        0: current user IS Not the owner
+        #       -1: group does not exists
+
+        # check if current user is the OWNER
+        if not self.Sec_IsOwner():
+            return 0
+
+        #Check if Group exists
+        groupExists, groupGUID = self.Sec_GroupExists(groupName)
+        if not groupExists:
+            return -1
+
+        #Remove ALL users from Group
+        self.tables['meta_userGroups_Users']._delete_where(f"userGroup_name=={groupName}") 
+        self.save()
+
+        #get group's GUID
+        group_GUID = self.__Sec_getGUID('meta_userGroups', 'userGroup_name', groupName)
+        #remove group's permissions
+        self.tables['meta_persmissions']._delete_where(f"GUID=={group_GUID}")      
+        self.save()
+        
+        #remove Group from Groups
+        self.tables['meta_userGroups']._delete_where(f"userGroup_name=={groupName}") 
+        self.save()
+        return 1
+
+
+    def __Sec_UserExistsInGroup(self, groupName, username):
+        result = False
+        try:
+            resUserGroup = ""
+            result = self.select('meta_userGroups_Users', ['userGroup_name','user_name'], f'userGroup_name=={groupName}', return_object=True)
+            resUserGroup = result.__dict__.get('data')
+            #print(resUserGroup)
+            if(len(resUserGroup) == 0):
+                result = False
+            else:
+                #print("step1")
+                for x in range(len(resUserGroup)):
+                    #print("step " , x)
+                    #print(resUserGroup[x][1])
+                    if (resUserGroup[x][1] == username):
+                        #print("step3")
+                        result = True
+                        #print("found")
+                        break
+                    else:
+                        result = False
+        except Exception as e:
+            #print(str(e))
+            result = False
+        return result
+
+  
+    def Sec_GroupAddUser(self, _groupName, _userName):
+        #result: 1: success
+        #        0: Current user is NOT the owner
+        #       -1: group does not exist
+        #       -2: User does not exist
+        #       -3: user already exists in group
+
+        #check if current user is the OWNER
+        if not self.Sec_IsOwner():
+            return 0
+
+        #Check if Group exists
+        groupExists, groupGUID = self.Sec_GroupExists(_groupName)
+        if not groupExists:
+            return -1
+
+        #check if user already exists
+        if not self.__Sec_HasAccessToDB(_userName, ""):
+            return -2
+
+        #Check if User belongs to Group
+        if self.__Sec_UserExistsInGroup(_groupName, _userName):
+            return -3
+        
+        #add user to group
+        combined = _userName + "|" + _groupName
+        self.tables['meta_userGroups_Users']._insert([_groupName, _userName, groupGUID, combined])
+        self.save()
+        return 1
+
+    
+    def Sec_GroupRemoveUser(self, _groupName, _userName):
+        #result: 1: success
+        #        0: Current user is NOT the owner
+        #       -1: group does not exist
+        #       -2: User does not exist
+        #       -3: user does not belong to group
+       
+        #check if current user is the OWNER
+        if not self.Sec_IsOwner():
+            return 0
+
+        #Check if Group exists
+        
+        groupExists, groupGUID = self.Sec_GroupExists(_groupName)
+        if not groupExists:
+            return -1
+
+        #check if user already exists
+        if not self.__Sec_HasAccessToDB(_userName, ""):
+            return -2
+
+        #Check if User belongs to Group
+        if not self.__Sec_UserExistsInGroup(_groupName, _userName):
+            return -3
+
+        #remove from group
+        combined = _userName + "|" + _groupName
+        self.tables['meta_userGroups_Users']._delete_where(f"combined=={combined}") 
+        self.save()
+        return 1
+
+    
+    def __Sec_HasAccessToDB(self, userName, userPassword):
+        #result: True : user has Acces
+        #        False: user DOES NOT have access
+        
+        # Δεν χρειάζεται έλεγχος μήπως ο χρήστης έχει πρόσβαση στην βάση μέσω κάποιας ομάδας
+        # γιατί οι χρήστες δηλώνονται στην βάση (δεν υπάρχει security "συνολικά",
+        # δηλαδή στο επίπεδο του server
+        try:
+           hasAccess = False
+           #res = self.select('meta_users', ['user_name'], f'user_name=={userName}', return_object=False)
+           result = ""
+           user_exists = self.select('meta_users', ['user_name'], f'user_name=={userName}', return_object=True)
+           #user_exists.show()
+           for key, value in user_exists.__dict__.items():
+               #print(key, '] : [', value)
+               if (key.strip() == "data"):
+                  result = value
+                  #print(f"found value = {value}")
+                  
+           #print(result[0][0])
+           #print(userName)
+           if (result[0][0] == userName):
+               hasAccess = True
+        except Exception as e:
+            #print(str(e))
+            hasAccess = False
+        return hasAccess
+
+
+    def __Sec_TableExists(self, tableName):
+        result = False
+        try:
+            path = f'dbdata/{self._name}_db/{tableName}.pkl'
+            #print("path = " , path)
+            result = os.path.exists(path)
+            #result = True
+        except Exception as e:
+            #print(str(e))
+            result = False
+        return result
+
+
+    def Sec_UserHasAccessToTable(self, userName, tableName):
+        #check if current user is the OWNER
+        if not self.Sec_IsOwner():
+            return 0
+        return self.__Sec_UserHasAccessToTableInternal(userName, tableName)
+
+    
+    def __Sec_UserHasAccessToTableInternal(self, userName, tableName):
+        canRead = Permission.AccessNotGranted
+        canInsert = Permission.AccessNotGranted
+        canUpdate = Permission.AccessNotGranted
+        canDelete = Permission.AccessNotGranted
+
+        user_GUID = self.__Sec_getGUID('meta_users', 'user_name', userName)
+        userGroups = self.__Sec_GetUserGroups(userName)
+        #print(f"userGroups = {userGroups}")
+        userGroups.extend([user_GUID])
+        canRead , canInsert, canUpdate, canDelete = self.__Sec_getGUID_Permissions(userGroups, tableName)
+
+        return canRead, canInsert, canUpdate, canDelete
+
+
+    def __Sec_getGUID_Permissions(self, GUIDs, tableName):
+        canRead = Permission.AccessNotGranted
+        canInsert = Permission.AccessNotGranted
+        canUpdate = Permission.AccessNotGranted
+        canDelete = Permission.AccessNotGranted
+
+        #print(f"GUIDs = {GUIDs}")
+        try:
+            result = self.select('meta_persmissions', ['GUID','table_name', 'canRead', 'canInsert', 'canUpdate', 'canDelete'], f'table_name=={tableName}', return_object=True)
+            resGUID = result.__dict__.get('data')
+            #print(f"resGuid = {resGUID} ")
+            for i in resGUID:
+                #print(f"current row = {i}")
+                #print(f"Check current group = {i[0]}")
+                if i[0] in GUIDs:
+                    #print("processing row")
+                    grpCanRead = i[2]
+                    #print(f"grpCanRead = {grpCanRead}")
+                    grpCanInsert = i[3]
+                    grpCanUpdate = i[4]
+                    grpCanDelete = i[5]
+                    #print("before access3State")
+                    canRead  = self.__Access3State(canRead, grpCanRead)
+                    #print(f"After access3State:: canRead = {canRead}")
+                    canInsert = self.__Access3State(canInsert, grpCanInsert)
+                    canUpdate = self.__Access3State(canUpdate, grpCanUpdate)
+                    canDelete = self.__Access3State(canDelete, grpCanDelete)
+
+        except Exception as e:
+            #print(str(e))
+            pass
+        return canRead, canInsert, canUpdate, canDelete
+
+
+    def __Sec_GetUserGroups(self, userName):
+        #select user Groups: from meta_userGroups_Users where userName =  {userName}
+        result = self.select('meta_userGroups_Users', ['groupGUID'], f'user_name=={userName}', return_object=True)
+        if len(result.__dict__.get('data')) > 0:
+          res = result.__dict__.get('data')[0]
+        else:
+          res = []
+        #print("res = " , res)
+        return  res
+
+    def __Access3State(self, access1, access2):
+       #print(f"checking Combine: access1 = {access1}, access2 = {access2}")
+       result = Permission.AccessNotGranted
+       #print("debug 1")
+       if (access1 == Permission.AccessDenied or access2 == Permission.AccessDenied):
+         #print("debug 2")
+         result = Permission.AccessDenied
+       elif  (access1 == Permission.AccessGranted or access2 == Permission.AccessGranted):
+         #print("debug 3")
+         result = Permission.AccessGranted
+       #print(f"result = {result}")
+       return result 
+        
+    
+    def Sec_UserGrantAccess(self, userName, tableName, canRead, canInsert, canUpdate, canDelete):
+        #result 1: Success
+        #       0: current user is not owner
+        #      -1: user does not exist
+        #      -2: table does not exist
+        #  remove    -3: user already has permissions
+
+        #check if current user is the OWNER
+        if not self.Sec_IsOwner():
+            return 0
+
+        #check if user exists
+        if not self.__Sec_HasAccessToDB(userName, ""):
+            return -1
+
+        #check if table exists
+        if not self.__Sec_TableExists(tableName):
+            return -2
+
+        #grant access to user
+        
+        #get user's GUID
+        user_GUID = self.__Sec_getGUID('meta_users', 'user_name', userName)
+
+        #Check if presmission already exist
+        if self.__Sec_PermissionExists(user_GUID, tableName):
+            return -3
+           
+        return self.__Sec_UserGrantAccessInternal(user_GUID, tableName, canRead, canInsert, canUpdate, canDelete)
+
+
+    def __Sec_UserGrantAccessInternal(self, GUID, tableName, canRead, canInsert, canUpdate, canDelete):
+        combined = GUID + "|" + tableName
+        self.tables['meta_persmissions']._insert([GUID, tableName, combined, canRead, canInsert, canUpdate, canDelete])
+        self.save()
+        return 1
+
+        
+    def __Sec_getGUID(self, table_name, column_name, userName):
+        result = self.select(f'{table_name}', [f'{column_name}','GUID'], f'{column_name}=={userName}', return_object=True)
+        res = result.__dict__.get('data')[0][1]
+        #print("res = " , res)
+        return res
+    
+
+    def __Sec_PermissionExists(self, GUID, tableName):
+        result = False
+        try:
+            resGUID = ""
+            result = self.select('meta_persmissions', ['GUID','table_name'], f'GUID=={GUID}', return_object=True)
+            resGUID = result.__dict__.get('data')
+            #print(resGUID)
+            if(len(resGUID) == 0):
+                result = False
+            else:
+                #print("step1")
+                for x in range(len(resGUID)):
+                    #print("step " , x)
+                    #print(resUserGroup[x][1])
+                    if (resGUID[x][1] == tableName):
+                        #print("step3")
+                        result = True
+                        #print("found")
+                        break
+                    else:
+                        result = False
+        except Exception as e:
+            #print(str(e))
+            result = False
+        return result
+
+
+    def Sec_GroupGrantAccess(self, groupName, tableName, canRead, canInsert, canUpdate, canDelete):
+        #result 1: Success
+        #       0: current user is not owner
+        #      -1: Group does not exist
+        #      -2: table does not exist
+        #      -3: group already has permissions
+        
+        #check if current user is the OWNER
+        if not self.Sec_IsOwner():
+            return 0
+
+        #Check if Group exists
+        groupExists, groupGUID = self.Sec_GroupExists(groupName)
+        if not groupExists:
+            return -1
+
+        #check if table exists
+        if not self.__Sec_TableExists(tableName):
+            return -2
+
+        #grant access to group
+        
+        #get group's GUID
+        group_GUID = self.__Sec_getGUID('meta_userGroups', 'userGroup_name', groupName)
+
+        #Check if presmission already exist
+        if self.__Sec_PermissionExists(group_GUID, tableName):
+           return -3
+            
+        #insert into meta_permissions GUID, tableName, canRead ...
+        self.__Sec_UserGrantAccessInternal(group_GUID, tableName, canRead, canInsert, canUpdate, canDelete)
+        return 1
+    
+        #check if group alredy has permissions
+   
+
+    def Sec_UserRevokeAccess(self, userName, tableName):
+        #result 1: Success
+        #       0: current user is not owner
+        #      -1: user does not exist
+        #      -2: table does not exist
+        #      -3: user has not permissions
+
+        #check if current user is the OWNER
+        if not self.Sec_IsOwner():
+            return 0
+
+        #check if user exists
+        if not self.__Sec_HasAccessToDB(userName, ""):
+            return -1
+
+        #check if table exists
+        if not self.__Sec_TableExists(tableName):
+            return -2
+
+        #revoke access from user
+        
+        #get user's GUID
+        user_GUID = self.__Sec_getGUID('meta_users', 'user_name', userName)
+
+        #Check if presmission exists
+        if not self.__Sec_PermissionExists(user_GUID,tableName):
+            return -3
+
+        result = 1
+        try:
+          combined = user_GUID + "|" + tableName
+          self.tables['meta_persmissions']._delete_where(f"GUID_Table_Name == {combined}")
+          self.save()
+        except:
+          result = -4  
+          print("Sec_GroupRevokeAccess: error remove permissions")
+        return result
+
+
+
+    def Sec_GroupRevokeAccess(self, groupName, tableName):
+        #result 1: Success
+        #       0: current user is not owner
+        #      -1: group does not exist
+        #      -2: table does not exist
+        #      -3: user has not permissions
+        
+        #check if current user is the OWNER
+        if not self.Sec_IsOwner():
+            return 0
+
+        #Check if Group exists
+        groupExists, groupGUID = self.Sec_GroupExists(groupName)
+        if not groupExists:
+            return -1
+
+        #check if table exists
+        if not self.__Sec_TableExists(tableName):
+            return -2
+
+        #revoke access from group
+        
+        #get group's GUID
+        group_GUID = self.__Sec_getGUID('meta_userGroups', 'userGroup_name', groupName)
+
+        #Check if presmission already exist
+        if not self.__Sec_PermissionExists(group_GUID, tableName):
+            return -3
+
+        result = 1
+        try:
+          combined = group_GUID + "|" + tableName
+          self.tables['meta_persmissions']._delete_where(f"GUID_Table_Name == {combined}")
+          self.save()
+        except:
+          result = -4  
+          print("Sec_GroupRevokeAccess: error remove permissions")
+        return result
+       
+        
+    #MarPap end
